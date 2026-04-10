@@ -1,0 +1,16 @@
+base_url = "https://oxarbitrage.github.io"
+title = "oxarbitrage"
+description = "cypherpunk. hacker. builder."
+compile_sass = false
+generate_feeds = false
+taxonomies = []
+
+[markdown]
+highlight_code = true
+highlight_theme = "base16-ocean-dark"
+
+[extra]
+author = "oxarbitrage"
+github = "https://github.com/oxarbitrage"
+bluesky = "https://bsky.app/profile/oxarbitrage.bsky.social"
+mastodon = ""

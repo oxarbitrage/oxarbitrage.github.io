@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+  <link rel="stylesheet" href="{{ get_url(path='css/style.css') }}">
+</head>
+<body>
+  <header>
+    <a href="{{ config.base_url }}" class="logo-link">
+      <img src="{{ get_url(path='logo.png') }}" alt="oxarbitrage logo" class="logo">
+    </a>
+    <nav>
+      <a href="{{ config.base_url }}">home</a>
+      <a href="{{ get_url(path='about') }}">about</a>
+      <a href="{{ get_url(path='projects') }}">projects</a>
+      <a href="{{ get_url(path='blog') }}">blog</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock content %}
+  </main>
+  <footer>
+    <a href="{{ config.extra.github }}">github</a>
+    {% if config.extra.bluesky %} · <a href="{{ config.extra.bluesky }}">bluesky</a>{% endif %}
+    {% if config.extra.mastodon %} · <a href="{{ config.extra.mastodon }}">mastodon</a>{% endif %}
+  </footer>
+</body>
+</html>
