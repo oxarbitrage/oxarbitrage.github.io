@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://oxarbitrage.github.io/</loc>
+    </url>
+    <url>
+        <loc>https://oxarbitrage.github.io/about/</loc>
+    </url>
+    <url>
+        <loc>https://oxarbitrage.github.io/blog/</loc>
+    </url>
+    <url>
+        <loc>https://oxarbitrage.github.io/blog/formally-verifying-the-zcash-orchard-stack/</loc>
+        <lastmod>2026-05-04</lastmod>
+    </url>
+    <url>
+        <loc>https://oxarbitrage.github.io/blog/why-the-way-you-trade-matters/</loc>
+        <lastmod>2024-01-01</lastmod>
+    </url>
+    <url>
+        <loc>https://oxarbitrage.github.io/projects/</loc>
+    </url>
+</urlset>

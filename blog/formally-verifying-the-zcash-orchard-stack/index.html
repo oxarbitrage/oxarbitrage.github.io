@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Formally Verifying the Zcash Orchard Cryptographic Stack | oxarbitrage</title>
+  <link rel="stylesheet" href="https://oxarbitrage.github.io/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="https:&#x2F;&#x2F;oxarbitrage.github.io" class="logo-link">
+      <img src="https://oxarbitrage.github.io/logo.png" alt="oxarbitrage logo" class="logo">
+    </a>
+    <nav>
+      <a href="https:&#x2F;&#x2F;oxarbitrage.github.io">home</a>
+      <a href="https://oxarbitrage.github.io/about">about</a>
+      <a href="https://oxarbitrage.github.io/projects">projects</a>
+      <a href="https://oxarbitrage.github.io/blog">blog</a>
+    </nav>
+  </header>
+  <main>
+    
+<article>
+  <h1>Formally Verifying the Zcash Orchard Cryptographic Stack</h1>
+  <p>Formal verification in cryptography is not new. Proofs of security reductions, game-hopping arguments, computational assumptions — these have been part of the discipline since the early days of provable security. What <em>is</em> relatively new is machine-checked verification: proofs that a theorem prover has checked, line by line, against an explicit formal model.</p>
+<p>This post describes an attempt to formally verify the cryptographic stack underlying Zcash's Orchard shielded protocol, from the elliptic curves at the base to the Halo 2 gadgets at the top. The work spans six Lean 4 repositories, each covering one layer of the stack, all building on Mathlib4. Every claimed theorem has been checked by the Lean kernel. No <code>sorry</code> statements remain in any of them.</p>
+<p>The goal here is not to survey what formal verification <em>can</em> do in principle. It's to describe what was actually proven, what was left as an axiom and why, and what the resulting theorems mean cryptographically.</p>
+<hr />
+<h2 id="the-stack">The Stack</h2>
+<p>The Orchard shielded pool is built from a precise set of cryptographic primitives:</p>
+<ul>
+<li><strong>Pasta curves</strong> — two elliptic curves (Pallas and Vesta) whose group orders and field characteristics form a 2-cycle.</li>
+<li><strong>Poseidon</strong> — a ZK-friendly hash function over the Pallas base field, used for nullifier derivation.</li>
+<li><strong>Sinsemilla</strong> — a hash-to-curve construction over Pallas, used for note and Merkle commitments.</li>
+<li><strong>RedPallas</strong> — a re-randomizable signature scheme (RedDSA over Pallas), used for spend authorization and value binding.</li>
+<li><strong>Orchard protocol</strong> — the shielded protocol composing the above into value commitments, nullifiers, note commitments, and action circuits.</li>
+<li><strong>Halo 2</strong> — the PLONKish proving system with IPA polynomial commitments, whose circuit gadgets implement the Orchard primitives.</li>
+</ul>
+<p>The dependency chain is strict: <code>pasta-formal</code> at the base, then the three primitives in parallel, then <code>orchard-formal</code> composing them, with <code>halo2-formal</code> sitting alongside and drawing from the primitives directly.</p>
+<pre style="background-color:#2b303b;color:#c0c5ce;"><code><span>pasta-formal
+</span><span>     │
+</span><span>     ├─── poseidon-formal
+</span><span>     ├─── sinsemilla-formal
+</span><span>     └─── redpallas-formal
+</span><span>                │
+</span><span>          orchard-formal
+</span><span>                │
+</span><span>          halo2-formal (also imports pasta, poseidon, sinsemilla)
+</span></code></pre>
+<p>Each repository is self-contained: it compiles independently, its claims are stated and proven within the repository, and downstream repositories take its results as imported theorems.</p>
+<hr />
+<h2 id="layer-1-pasta-curves">Layer 1: Pasta Curves</h2>
+<p>The Pallas and Vesta curves are defined by the same short Weierstrass equation, <em>y</em>² = <em>x</em>³ + 5, but over different prime fields:</p>
+<ul>
+<li><strong>Pallas</strong> over 𝔽_p, where p ≈ 2²⁵⁴ (the Pallas base field, also the Vesta scalar field)</li>
+<li><strong>Vesta</strong> over 𝔽_q, where q ≈ 2²⁵⁴ (the Vesta base field, also the Pallas scalar field)</li>
+</ul>
+<p>The design is deliberate: the group order of Pallas equals q, and the group order of Vesta equals p. This 2-cycle is what enables efficient recursive proof composition in Halo 2: a Pallas circuit can verify a Vesta proof, and vice versa, with no field extension mismatch. It also means that scalar multiplication on Pallas lives in the same field as arithmetic on Vesta — the two layers fit together without conversion.</p>
+<h3 id="what-was-proven">What Was Proven</h3>
+<p>The <code>pasta-formal</code> repository proves:</p>
+<ol>
+<li>
+<p><strong>Primality of p and q</strong> — both ~254-bit primes are proven prime using the Lucas primality test with hierarchical Pratt certificates. The certificate chain for each prime unfolds through 28 intermediate primes across 4 levels, bottoming out at small primes verifiable by <code>norm_num</code>. This is fully constructive: no external oracle was consulted.</p>
+</li>
+<li>
+<p><strong>Both curves are elliptic</strong> — the discriminant Δ = −10800 is a unit in both 𝔽_p and 𝔽_q, i.e., 10800 ≢ 0 (mod p) and 10800 ≢ 0 (mod q). This gives <code>IsElliptic</code> instances for both curves.</p>
+</li>
+<li>
+<p><strong>Same equation</strong> — <code>Pallas.a₁ = Vesta.a₁</code>, etc., proven by <code>rfl</code>.</p>
+</li>
+</ol>
+<h3 id="the-open-problem-group-orders">The Open Problem: Group Orders</h3>
+<p>The 2-cycle property — |Pallas(𝔽_p)| = q and |Vesta(𝔽_q)| = p — is stated in <code>pasta-formal/Pasta/Cycle.lean</code> as axioms:</p>
+<pre data-lang="lean" style="background-color:#2b303b;color:#c0c5ce;" class="language-lean "><code class="language-lean" data-lang="lean"><span>axiom cycle_conjecture_pallas : Nat.card (Pallas.toAffine.Point) = Fq.p
+</span><span>axiom cycle_conjecture_vesta  : Nat.card (Vesta.toAffine.Point) = Fp.p
+</span></code></pre>
+<p>These are not proven, and the gap is real. Proving the group order of an elliptic curve over a prime field requires either Schoof's algorithm (polynomial time but non-trivial to formalize), an SEA variant, or a certified AGM computation — none of which are currently available in Mathlib. The same result is used as <code>order_pallas</code> in <code>redpallas-formal</code>. Naming it explicitly in both places makes the dependency visible.</p>
+<h3 id="2-adicity">2-Adicity</h3>
+<p>Both p−1 and q−1 are divisible by 2³². This is the 2-adicity property that enables NTT-based polynomial arithmetic — the fast Fourier transform over 𝔽_p works at depth 32. It is a consequence of the primality factorizations:</p>
+<ul>
+<li>p − 1 = 2³² × 3 × 463 × 539204044132271846773 × 8999194758858563409123804352480028797519453</li>
+<li>q − 1 = 2³² × 3² × 1709 × 24859 × 1690502597179744445941507 × 10427374428728808478656897599072717</li>
+</ul>
+<p>These factorizations are the Pratt certificates.</p>
+<hr />
+<h2 id="layer-2-poseidon-a-zk-friendly-permutation">Layer 2: Poseidon — A ZK-Friendly Permutation</h2>
+<p>Poseidon is an algebraic hash function designed specifically for ZK circuits. Its key design principle: minimise the number of field multiplications per output bit. This is achieved by using a power-map S-box (x ↦ xᵅ) rather than a Boolean circuit — a single squaring in 𝔽_p costs one constraint, versus 17+ for a SHA-256 round.</p>
+<p>The Orchard instantiation uses:</p>
+<ul>
+<li>State width t = 3 (elements of 𝔽_p)</li>
+<li>R_F = 8 full rounds (S-box on all 3 elements)</li>
+<li>R_P = 56 partial rounds (S-box on first element only)</li>
+<li>α = 5 (the S-box exponent)</li>
+<li>A 3×3 Cauchy MDS matrix over 𝔽_p</li>
+</ul>
+<h3 id="why-a-5">Why α = 5?</h3>
+<p>The S-box x ↦ x⁵ is a permutation of 𝔽_p if and only if gcd(5, p−1) = 1. For the Pallas field, p−1 has no factor of 5 (as one can verify from the Pratt certificate above). This is formally proven:</p>
+<pre data-lang="lean" style="background-color:#2b303b;color:#c0c5ce;" class="language-lean "><code class="language-lean" data-lang="lean"><span>theorem alpha_coprime : Nat.Coprime 5 (Fp.p - 1)
+</span></code></pre>
+<p>verified by <code>native_decide</code>. The common alternative α = 3 is not usable here: gcd(3, p−1) ≠ 1 for the Pallas field (p−1 is divisible by 3).</p>
+<h3 id="the-headline-theorem-permutation-bijectivity">The Headline Theorem: Permutation Bijectivity</h3>
+<blockquote>
+<p><strong>Theorem <code>permutation_bijective</code></strong>: The full Poseidon permutation — 4 full rounds, 56 partial rounds, 4 full rounds — is a bijection on 𝔽_p³.</p>
+</blockquote>
+<p>The proof is layered:</p>
+<ol>
+<li><code>sbox_bijective</code> — x ↦ x⁵ is a bijection on 𝔽_p, via Fermat's little theorem: x^(5d) = x where 5d ≡ 1 (mod p−1).</li>
+<li><code>mds_mul_inv</code> — the MDS matrix has an explicit inverse, verified by <code>native_decide</code>.</li>
+<li><code>mixLayer_bijective</code>, <code>fullRound_bijective</code>, <code>partialRound_bijective</code> — each round is a composition of bijections.</li>
+<li><code>applyRounds_bijective</code> — applying bijective rounds preserves bijectivity (induction on round count).</li>
+<li><code>permutation_bijective</code> — follows immediately.</li>
+</ol>
+<p><strong>What this gives cryptographically:</strong> A bijective permutation is the core requirement for the sponge construction's indifferentiability from a random oracle. If the permutation were not bijective, the sponge could have fixed points or cycles that would break the collision-resistance argument.</p>
+<p><strong>What this does not give:</strong> Preimage resistance and collision resistance are not proven. They are conjectured from the algebraic degree growth across rounds — the effective degree of the composition grows exponentially, making algebraic attacks infeasible in practice. Formalizing this argument would require substantially more machinery.</p>
+<p>The 192 round constants (64 rounds × 3 state elements) are instantiated as concrete 𝔽_p values generated by Grain LFSR, cross-checked against the <code>pasta-hadeshash</code> Sage reference. There are no axioms in <code>poseidon-formal</code> — bijectivity is proven from first principles.</p>
+<hr />
+<h2 id="layer-3-sinsemilla-hash-to-curve-with-a-security-proof">Layer 3: Sinsemilla — Hash-to-Curve with a Security Proof</h2>
+<p>Sinsemilla is designed for use inside arithmetic circuits, specifically for hashing the contents of Orchard notes into Merkle tree commitments. It operates by accumulating elliptic curve points, making it efficient to verify in a PLONKish circuit.</p>
+<p>The construction: given domain separator D and bit message M, split M into n chunks of k = 10 bits each. Let Q(D) = GroupHash("z.cash:SinsemillaQ", D) and S(j) = GroupHash("z.cash:SinsemillaS", j) for j ∈ {0, ..., 1023}. Define the accumulator:</p>
+<p>$$\text{Acc}<em>0 = Q(D), \quad \text{Acc}</em>{i+1} = [2] \cdot \text{Acc}_i + S(m_i)$$</p>
+<p>The hash output is the x-coordinate of Acc_n.</p>
+<h3 id="the-headline-theorem-pedersen-equivalence">The Headline Theorem: Pedersen Equivalence</h3>
+<blockquote>
+<p><strong>Theorem <code>hashToPoint_pedersen</code></strong>: Let n = |pad(M)|. Then
+$$\text{hashToPoint}(D, M) = [2^n] \cdot Q(D) + \sum_{i=0}^{n-1} 2^{n-1-i} \cdot S(\text{pad}(M)_i)$$</p>
+</blockquote>
+<p>This says Sinsemilla computes a <em>Pedersen vector commitment</em> — a weighted sum of the generators S(j) with coefficients determined by the message chunks. The proof goes through <code>step_eq_double_add</code> (the accumulator step is <code>[2]·P + S(mᵢ)</code>) and then <code>foldl_step_pedersen</code> (unrolling the fold).</p>
+<p>The significance: the Pedersen structure connects Sinsemilla to the discrete logarithm problem. The right-hand side is an algebraic combination of the generators S(j), and for this to be zero the message chunks must form a DLP relation.</p>
+<h3 id="the-security-reduction">The Security Reduction</h3>
+<p>Two further theorems make this precise.</p>
+<p>First, the χ (chi) function: χ(m)_j = Σᵢ 2^(n−1−i) · δ(mᵢ, j) maps a chunk sequence to a coefficient vector over ℕ. The weight of generator S(j) in the Pedersen sum is χ(m)_j.</p>
+<blockquote>
+<p><strong>Theorem <code>chi_injective</code></strong>: For equal-length chunk sequences m₁ ≠ m₂, the coefficient vectors χ(m₁) and χ(m₂) differ.</p>
+</blockquote>
+<p>This is a combinatorial result — the binary encoding ensures distinct sequences produce distinct weight vectors.</p>
+<blockquote>
+<p><strong>Theorem <code>collision_implies_sumChunks_eq</code></strong>: If hashToPoint(D, M₁) = hashToPoint(D, M₂) with |pad(M₁)| = |pad(M₂)|, then Σⱼ (χ(m₁)_j − χ(m₂)_j) · S(j) = 0.</p>
+</blockquote>
+<p>Combined: a Sinsemilla collision on equal-length messages yields a non-trivial linear combination of the S(j) generators that evaluates to zero — a discrete logarithm relation on Pallas. Under DLP hardness, such a relation cannot be found efficiently.</p>
+<p>The length constraint is essential: Sinsemilla is not designed to be collision-resistant across different message lengths. The Orchard circuit enforces a fixed message length, so this is not a practical limitation.</p>
+<p><strong>Axiom:</strong> <code>groupHash_ne_zero</code> — the GroupHash function always produces non-identity points. This cannot be proven without formalizing the SWU map + BLAKE2b pipeline, which would be a substantial separate project.</p>
+<hr />
+<h2 id="layer-4-redpallas-re-randomizable-signatures">Layer 4: RedPallas — Re-randomizable Signatures</h2>
+<p>RedPallas is a RedDSA instantiation over the Pallas curve. It is used for two purposes in Orchard: SpendAuthSig (authorizing note spends) and BindingSig (proving value balance). The re-randomization property is what makes it suitable for both: the same key can be used multiple times without linking spends together.</p>
+<p>The scheme:</p>
+<ul>
+<li><strong>keygen(sk)</strong>: vk = [sk]·G</li>
+<li><strong>sign(sk, msg, r)</strong>: R = [r]·G, c = H(R, vk, msg), S = r + c·sk (mod q)</li>
+<li><strong>verify(vk, msg, σ)</strong>: check [S]·G = R + [c]·vk</li>
+<li><strong>rerandomizeKey(α, vk)</strong>: rk = vk + [α]·G</li>
+<li><strong>rerandomizeSk(α, sk)</strong>: rsk = sk + α</li>
+</ul>
+<h3 id="the-headline-theorem-re-randomization-correctness">The Headline Theorem: Re-Randomization Correctness</h3>
+<blockquote>
+<p><strong>Theorem <code>verify_rerandomized</code></strong>: For any sk, α, msg, r, a signature produced by sign(sk+α, msg, r) verifies against vk + [α]·G.</p>
+</blockquote>
+<p>The proof is purely algebraic: [r + c·(sk+α)]·G = [r]·G + [c·sk]·G + [c·α]·G = R + [c]·vk + [c·α]·G = R + [c]·(vk + [α]·G).</p>
+<p>Two homomorphism results are proven. <code>keygen_add</code> — keygen(a + b) = keygen(a) + keygen(b) — makes keygen a group homomorphism from (𝔽_q, +) to (Pallas, +). <code>keygen_mul</code> — keygen(a · b) = a ⬝ keygen(b) — shows the stronger module homomorphism property: scaling the secret key is the same as scalar-multiplying the public key. Together they establish that keygen is an 𝔽_q-module map, the full algebraic structure expected of a linear key derivation.</p>
+<h3 id="what-is-not-formalized">What Is Not Formalized</h3>
+<p>Existential unforgeability (EUF-CMA) is not proven, and the design does not claim to prove it here. Unforgeability requires modeling H as a random oracle and showing that constructing a valid signature without knowledge of sk is as hard as solving DLP. The ROM framework is not yet formalized in Lean/Mathlib at the level needed. The correctness results here are purely algebraic.</p>
+<p><strong>Key axiom:</strong> <code>order_pallas</code> — the Pallas group has prime order Fq.p. This is the same open result as <code>cycle_conjecture_pallas</code> in <code>pasta-formal</code>, and it is needed here to establish that scalar multiplication by an element of 𝔽_q is well-defined.</p>
+<hr />
+<h2 id="layer-5-orchard-the-protocol">Layer 5: Orchard — The Protocol</h2>
+<p><code>orchard-formal</code> composes the three primitives into the Orchard shielded protocol. The formalization covers the algebraic core: value commitments, nullifiers, note commitments, DH key agreement, Merkle authentication paths, and action circuit soundness. Roughly 35 theorems are proven.</p>
+<h3 id="value-commitment-homomorphism">Value Commitment Homomorphism</h3>
+<p>Value commitments take the form cv = [v]·V + [rcv]·BindingG, where V and BindingG are generators, v ∈ 𝔽_q is the value, and rcv ∈ 𝔽_q is the randomness. The key algebraic property:</p>
+<blockquote>
+<p><strong>Theorem <code>valueCommit_add</code></strong>: valueCommit(v₁ + v₂, r₁ + r₂) = valueCommit(v₁, r₁) + valueCommit(v₂, r₂).</p>
+</blockquote>
+<p>This additive homomorphism is what allows a multi-action transaction to verify balance with a single binding signature: the sum of value commitments for balanced actions collapses to [rcv_net]·BindingG, and a RedDSA signature on this is a proof of knowledge of rcv_net.</p>
+<blockquote>
+<p><strong>Theorem <code>balance_multi_binding</code></strong>: For n actions with total value 0 (balanced), the net binding verification key equals [Σᵢ rcvᵢ]·BindingG.</p>
+</blockquote>
+<h3 id="the-headline-theorem-nullifier-uniqueness">The Headline Theorem: Nullifier Uniqueness</h3>
+<p>Nullifiers in Orchard are derived as nf = [Poseidon(nk, ρ) + ψ]·K + cm, where nk is the nullifier key, ρ and ψ are note-specific values, and cm is the note commitment. Spending a note reveals nf but not the note itself.</p>
+<blockquote>
+<p><strong>Theorem <code>nullifier_uniqueness</code></strong>: If two notes produce the same nullifier (under the same nk), they have the same note commitment.</p>
+</blockquote>
+<p>This is the formal proof of double-spend prevention: the nullifier set is injective over notes (given the same key). The proof uses the linear independence of K and cm via a DLP argument (<code>nullifier_psi_collision</code>: distinct ψ values give distinct nullifiers unless K and cm are DLP-related).</p>
+<h3 id="dh-key-agreement">DH Key Agreement</h3>
+<p>The Orchard encryption scheme uses a Diffie-Hellman construction. The sender computes the shared secret as [esk]·pk_d, and the recipient computes [ivk]·epk, where epk = [esk]·g_d and pk_d = [ivk]·g_d.</p>
+<blockquote>
+<p><strong>Theorem <code>dh_shared_secret</code></strong>: [esk]·([ivk]·g_d) = [ivk]·([esk]·g_d).</p>
+</blockquote>
+<p>This is scalar multiplication commutativity, proven from the bilinearity of scalar multiplication over the Pallas group.</p>
+<h3 id="merkle-tree-security">Merkle Tree Security</h3>
+<p>The Merkle tree uses Sinsemilla hash for internal nodes. The formalization proves:</p>
+<blockquote>
+<p><strong>Theorem <code>node_root_injective</code></strong>: Under collision resistance of the Merkle hash, equal roots imply equal left and right subtree roots.</p>
+</blockquote>
+<p>This is stated with an explicit <code>merkleHash_collision_resistant</code> axiom — a standard assumption rather than a derived result.</p>
+<h3 id="the-composite-result">The Composite Result</h3>
+<p>The <code>spend_authorization</code> theorem brings together: balanced value commitments, valid binding signature, and nullifier uniqueness into a single composite guarantee. It is the algebraic core of Orchard's privacy and integrity properties.</p>
+<hr />
+<h2 id="layer-6-halo-2-the-proof-system">Layer 6: Halo 2 — The Proof System</h2>
+<p><code>halo2-formal</code> covers the PLONKish constraint system and the circuit gadgets that implement Orchard primitives. It is distinct from the other repositories in that it formalizes the <em>proof system mechanics</em> rather than the <em>protocol semantics</em>.</p>
+<h3 id="plonkish-arithmetization">PLONKish Arithmetization</h3>
+<p>A Halo 2 circuit is a table of field elements, constrained by:</p>
+<ul>
+<li>
+<p><strong>Gates</strong>: polynomial relations among cells in the same row. Proven:</p>
+<blockquote>
+<p><strong>Theorem <code>addGate_sound</code></strong>: A satisfied addition gate implies a + b = c.
+<strong>Theorem <code>boolGate_sound</code></strong>: A satisfied Boolean gate implies a ∈ {0, 1}.</p>
+</blockquote>
+</li>
+<li>
+<p><strong>Permutation argument</strong>: copy constraints (equal cells in different positions) are enforced by a grand product check. The <code>permCheck_sound</code> axiom is the Schwartz-Zippel soundness claim (discussed below).</p>
+</li>
+<li>
+<p><strong>Lookup argument</strong>: cells can be constrained to lie in a lookup table. <code>lookupSatisfied_of_witness</code> and its converse are both proven.</p>
+</li>
+</ul>
+<h3 id="range-check">Range Check</h3>
+<p>The range check gadget decomposes a value into w words of base b:</p>
+<blockquote>
+<p><strong>Theorem <code>range_check_soundness</code></strong>: A valid base-b decomposition of width w implies v &lt; b^w.<br />
+<strong>Theorem <code>range_check_completeness</code></strong>: If v &lt; b^w, a valid decomposition exists.</p>
+</blockquote>
+<p>Both are proven via Euclidean division — a clean mathematical result with no axioms.</p>
+<h3 id="ecc-gadgets">ECC Gadgets</h3>
+<p>Two scalar multiplication circuits are formalized:</p>
+<ul>
+<li>
+<p><strong>Fixed-base</strong> (3-bit windows, 85 windows): each window selects from 8 precomputed points; the result is assembled from window outputs.</p>
+<blockquote>
+<p><strong>Theorem <code>fixedBaseMul_eq_smul</code></strong>: The windowed computation equals standard scalar multiplication.</p>
+</blockquote>
+</li>
+<li>
+<p><strong>Variable-base</strong> (bit decomposition, double-and-add):</p>
+<blockquote>
+<p><strong>Theorem <code>variableBaseMul_eq_smul</code></strong>: The bit-by-bit computation equals standard scalar multiplication.</p>
+</blockquote>
+</li>
+</ul>
+<p>These are the circuit-to-specification equivalence theorems for EC scalar multiplication.</p>
+<h3 id="the-headline-theorem-sinsemilla-circuit-protocol">The Headline Theorem: Sinsemilla Circuit = Protocol</h3>
+<blockquote>
+<p><strong>Theorem <code>sinsemilla_circuit_pedersen</code></strong>: The Sinsemilla circuit gadget output equals [2^n]·Q(D) + Σᵢ 2^(n-1-i)·S(mᵢ).</p>
+</blockquote>
+<p>This connects the circuit layer (<code>halo2-formal</code>) to the protocol layer (<code>sinsemilla-formal</code>): the Halo 2 gadget computes exactly what the Sinsemilla specification says it should. Combined with <code>hashToPoint_pedersen</code> from <code>sinsemilla-formal</code>, the full chain from circuit to cryptographic definition is closed.</p>
+<h3 id="fiat-shamir-transcript">Fiat-Shamir Transcript</h3>
+<p>The transcript uses Poseidon as the hash:</p>
+<blockquote>
+<p><strong>Theorem <code>transcript_separation</code></strong>: Different domain separator OR different absorbed value → different Fiat-Shamir challenge.</p>
+</blockquote>
+<p>This is the binding property. The <code>poseidon_collision_resistant</code> axiom is needed — bijectivity alone does not imply collision resistance.</p>
+<hr />
+<h2 id="what-was-proven-vs-what-was-assumed">What Was Proven vs. What Was Assumed</h2>
+<p>The following table gives a complete inventory of axioms across all six repositories, with cryptographic justification for each.</p>
+<table><thead><tr><th>Axiom</th><th>Repository</th><th>Type</th><th>Why axiomatized</th></tr></thead><tbody>
+<tr><td><code>cycle_conjecture_pallas</code></td><td>pasta-formal</td><td>Group theory</td><td>|Pallas(𝔽_p)| = q — requires Schoof's algorithm</td></tr>
+<tr><td><code>cycle_conjecture_vesta</code></td><td>pasta-formal</td><td>Group theory</td><td>|Vesta(𝔽_q)| = p — same</td></tr>
+<tr><td><code>groupHash_ne_zero</code></td><td>sinsemilla-formal</td><td>Hash-to-curve</td><td>Full SWU + BLAKE2b formalization needed</td></tr>
+<tr><td><code>order_pallas</code></td><td>redpallas-formal</td><td>Group theory</td><td>Same as <code>cycle_conjecture_pallas</code></td></tr>
+<tr><td><code>challengeHash</code></td><td>redpallas-formal</td><td>Random oracle</td><td>BLAKE2b, opaque by design</td></tr>
+<tr><td><code>G_ne_zero</code></td><td>redpallas-formal</td><td>Generator</td><td>Certified Zcash parameter</td></tr>
+<tr><td><code>ValueBaseV</code>, <code>K</code>, <code>NoteCommitR</code></td><td>orchard-formal</td><td>Generators</td><td>Certified parameters</td></tr>
+<tr><td><code>noteCommitHash</code></td><td>orchard-formal</td><td>Hash function</td><td>Commitment hash, axiomatized as opaque</td></tr>
+<tr><td><code>merkleHash_collision_resistant</code></td><td>orchard-formal</td><td>Hardness</td><td>Standard collision-resistance assumption</td></tr>
+<tr><td><code>commitToLeaf</code></td><td>orchard-formal</td><td>Leaf hash</td><td>Axiomatized as opaque</td></tr>
+<tr><td><code>ipaCompleteness</code></td><td>halo2-formal</td><td>IPA soundness</td><td>Inner Product Argument — deep proof theory</td></tr>
+<tr><td><code>permCheck_sound</code></td><td>halo2-formal</td><td>Schwartz-Zippel</td><td>See below</td></tr>
+<tr><td><code>poseidon_collision_resistant</code></td><td>halo2-formal</td><td>Hardness</td><td>Not derivable from bijectivity</td></tr>
+<tr><td><code>add_ne_zero_of_nonexceptional</code></td><td>halo2-formal</td><td>DLP</td><td>Requires group order axiom</td></tr>
+<tr><td><code>G</code>, <code>H</code></td><td>halo2-formal</td><td>Generators</td><td>Pedersen commitment generators</td></tr>
+</tbody></table>
+<p>A few axioms deserve special discussion.</p>
+<p><strong><code>order_pallas</code> / <code>cycle_conjecture_pallas</code></strong>: These appear in two repositories under different names but state the same thing. Consolidating them under the pasta-formal axiom is the right long-term fix. The proof strategy is clear (Schoof's algorithm), and the result is numerically verified by the Zcash team using Sage scripts — it is just not yet machine-checked.</p>
+<p><strong><code>permCheck_sound</code></strong> (Schwartz-Zippel): The permutation argument soundness says: if the grand product check passes, the copy constraints are satisfied. The argument is probabilistic — for a fixed failing witness, at most n values of the challenge β can make the check pass (where n is the circuit width). Since |𝔽_p| ≈ 2²⁵⁴, the soundness error is negligible. A formal proof would require: (1) expressing permCheck as a rational function evaluation, (2) showing the numerator polynomial is nonzero when copy constraints fail, (3) applying <code>Polynomial.card_roots_le_degree</code> from Mathlib. All three steps are in principle available in Lean; they require substantial setup.</p>
+<p><strong><code>poseidon_collision_resistant</code></strong>: Poseidon's collision resistance is conjectured from algebraic degree bounds across rounds — the effective degree grows exponentially, reaching approximately (t · R_F/2 + R_P)^t after all rounds. Formalizing this argument would require symbolic computation of polynomial degree through the permutation, which is a research-level Lean project.</p>
+<p><strong><code>ipaCompleteness</code></strong>: The Inner Product Argument is a complete, sound interactive proof system for evaluations of committed polynomials. Completeness (honest prover succeeds) follows from the IPA protocol definition; soundness (cheating prover fails) requires rewinding arguments. Neither is in Mathlib. This is an open problem in formal verification of SNARKs generally.</p>
+<hr />
+<h2 id="reflections-on-lean-4-for-cryptographic-verification">Reflections on Lean 4 for Cryptographic Verification</h2>
+<p><strong>What worked well</strong>: Mathlib's algebraic hierarchy (elliptic curves, finite fields, polynomial rings) is mature enough to state and prove the theorems here without building from scratch. The Lucas primality test, Fermat's little theorem, <code>ZMod</code>, <code>WeierstrassCurve</code>, and <code>native_decide</code> for computational checks — these are all available and well-supported.</p>
+<p><strong>What required workarounds</strong>: Scalar multiplication with scalars from a different field (e.g., 𝔽_q-valued scalars on the Pallas group) is not in Mathlib's type class hierarchy. <code>redpallas-formal</code> defines <code>fqSmul</code> as an explicit function and proves its linear algebra manually. This is sound but requires care to avoid naming clashes with the existing <code>SMul</code> instances.</p>
+<p><strong>What would require new Mathlib contributions</strong>:</p>
+<ul>
+<li>Schoof's algorithm or an AGM certificate checker — to close the group order gap.</li>
+<li>Schwartz-Zippel with symbolic polynomial representations — to prove the permutation argument soundness.</li>
+<li>The ROM (random oracle model) framework — to formalize EUF-CMA security of RedPallas.</li>
+<li>IPA completeness and soundness — a substantial stand-alone project.</li>
+</ul>
+<p>The six repositories together cover the algebraic and protocol-level correctness of Orchard's cryptographic stack. They do not cover probabilistic security (unforgeability, collision resistance) or the full SNARK security of Halo 2. The boundary between what is and is not proven is, as far as possible, made explicit through the axiom inventory above.</p>
+<hr />
+<h2 id="source">Source</h2>
+<p>All six repositories are open source:</p>
+<ul>
+<li><a href="https://github.com/oxarbitrage/pasta-formal">pasta-formal</a> — Pasta curves (Pallas and Vesta)</li>
+<li><a href="https://github.com/oxarbitrage/sinsemilla-formal">sinsemilla-formal</a> — Sinsemilla hash</li>
+<li><a href="https://github.com/oxarbitrage/redpallas-formal">redpallas-formal</a> — RedPallas signatures</li>
+<li><a href="https://github.com/oxarbitrage/poseidon-formal">poseidon-formal</a> — Poseidon hash</li>
+<li><a href="https://github.com/oxarbitrage/orchard-formal">orchard-formal</a> — Orchard protocol</li>
+<li><a href="https://github.com/oxarbitrage/halo2-formal">halo2-formal</a> — Halo 2 gadgets</li>
+</ul>
+
+</article>
+
+  </main>
+  <footer>
+    <a href="https:&#x2F;&#x2F;github.com&#x2F;oxarbitrage">github</a>
+     · <a href="https:&#x2F;&#x2F;bsky.app&#x2F;profile&#x2F;oxarbitrage.bsky.social">bluesky</a>
+    
+  </footer>
+</body>
+</html>
